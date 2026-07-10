@@ -49,6 +49,7 @@ with KVStore("mydata.db") as store:
     "name" in store            # True
     store.delete("name")
     store.get("name")          # None
+    store.stats()               # {'live_keys': 1, 'log_size_bytes': ..., 'dead_ratio': ...}
     store.compact()            # reclaim space from old/deleted records
 
 # reopening replays the log — all surviving data comes back automatically
@@ -63,6 +64,7 @@ python cli.py mydata.db set name ujjwal
 python cli.py mydata.db get name
 python cli.py mydata.db delete name
 python cli.py mydata.db keys
+python cli.py mydata.db stats
 python cli.py mydata.db compact
 python cli.py mydata.db repl        # interactive shell
 ```
@@ -99,6 +101,42 @@ also a direct, measured illustration of *why* real systems batch writes or
 relax fsync policy (e.g. Kafka's `acks`/flush-interval settings, Redis's
 AOF `everysec` mode) when they need higher write throughput than "durable
 on every single call" allows.
+
+## Deciding when to compact
+
+`compact()` rewrites the whole log, so it's not free -- you don't want to
+run it on a timer without knowing whether it'll actually help. `stats()`
+gives you the numbers to decide:
+
+```python
+>>> store.stats()
+{'live_keys': 1200, 'log_size_bytes': 1004890, 'live_bytes': 2540,
+ 'dead_bytes': 1002350, 'dead_ratio': 0.9975}
+```
+
+`dead_ratio` is the fraction of the on-disk log that's dead weight --
+overwritten values and delete tombstones that `compact()` would reclaim.
+As a rule of thumb:
+
+- **`dead_ratio > 0.5`**: more than half the file is dead weight; compacting
+  will shrink it substantially and is worth the rewrite cost. This is the
+  case in the benchmark above, where an overwrite-heavy workload leaves the
+  log 99.7% reclaimable.
+- **`dead_ratio` near 0**: most entries are still live; compacting would
+  rewrite nearly the whole file to reclaim almost nothing.
+
+The CLI's `stats` command prints this same breakdown and flags the
+"consider running compact" case automatically:
+
+```bash
+$ python cli.py mydata.db stats
+live_keys:      1200
+log_size_bytes: 1004890
+live_bytes:     2540
+dead_bytes:     1002350
+dead_ratio:     99.7%
+-> more than half the log is dead weight; consider running 'compact'
+```
 
 ## Testing
 

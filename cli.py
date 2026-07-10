@@ -8,6 +8,7 @@ Usage:
     python cli.py <db_file> delete <key>
     python cli.py <db_file> keys
     python cli.py <db_file> compact
+    python cli.py <db_file> stats
     python cli.py <db_file> repl        # interactive shell
 """
 import sys
@@ -22,9 +23,19 @@ def _print_get(store, key):
     else:
         print(val.decode("utf-8", errors="replace"))
 
+def _print_stats(store):
+    stats = store.stats()
+    print(f"live_keys:      {stats['live_keys']}")
+    print(f"log_size_bytes: {stats['log_size_bytes']}")
+    print(f"live_bytes:     {stats['live_bytes']}")
+    print(f"dead_bytes:     {stats['dead_bytes']}")
+    print(f"dead_ratio:     {stats['dead_ratio']:.1%}")
+    if stats["dead_ratio"] > 0.5:
+        print("-> more than half the log is dead weight; consider running 'compact'")
+
 
 def repl(store):
-    print(f"kvstore REPL — {store.path}  ({len(store)} keys). Commands: set/get/delete/keys/compact/exit")
+    print(f"kvstore REPL — {store.path}  ({len(store)} keys). Commands: set/get/delete/keys/stats/compact/exit")
     while True:
         try:
             line = input("kv> ").strip()
@@ -50,8 +61,10 @@ def repl(store):
             elif cmd == "compact":
                 old, new = store.compact()
                 print(f"compacted: {old} -> {new} bytes ({old - new} bytes reclaimed)")
+            elif cmd == "stats":
+                _print_stats(store)
             else:
-                print("usage: set <k> <v> | get <k> | delete <k> | keys | compact | exit")
+                print("usage: set <k> <v> | get <k> | delete <k> | keys | stats | compact | exit")
         except Exception as e:
             print(f"error: {e}")
 
@@ -88,6 +101,8 @@ def main(argv):
         elif cmd == "compact":
             old, new = store.compact()
             print(f"compacted: {old} -> {new} bytes ({old - new} bytes reclaimed)")
+        elif cmd == "stats":
+            _print_stats(store)
         else:
             print(__doc__)
             return 1

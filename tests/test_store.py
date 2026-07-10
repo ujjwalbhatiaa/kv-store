@@ -233,6 +233,79 @@ class TestCompaction(TempDBMixin, unittest.TestCase):
         store.close()
 
 
+class TestStats(TempDBMixin, unittest.TestCase):
+    def test_stats_on_empty_store(self):
+        store = KVStore(self.make_path())
+        stats = store.stats()
+        self.assertEqual(stats["live_keys"], 0)
+        self.assertEqual(stats["log_size_bytes"], 0)
+        self.assertEqual(stats["live_bytes"], 0)
+        self.assertEqual(stats["dead_bytes"], 0)
+        self.assertEqual(stats["dead_ratio"], 0.0)
+        store.close()
+
+    def test_stats_reports_live_keys_and_sizes(self):
+        store = KVStore(self.make_path())
+        store.set("a", "1")
+        store.set("b", "22")
+        stats = store.stats()
+        self.assertEqual(stats["live_keys"], 2)
+        # nothing has been overwritten or deleted yet, so the whole log
+        # is live: no dead bytes, and live_bytes == the file size.
+        self.assertEqual(stats["log_size_bytes"], os.path.getsize(store.path))
+        self.assertEqual(stats["live_bytes"], stats["log_size_bytes"])
+        self.assertEqual(stats["dead_bytes"], 0)
+        self.assertEqual(stats["dead_ratio"], 0.0)
+        store.close()
+
+    def test_stats_detects_dead_bytes_from_overwrites(self):
+        store = KVStore(self.make_path())
+        for i in range(20):
+            store.set("hot_key", f"value_{i}")  # 20 writes, 1 live key
+        stats = store.stats()
+        self.assertEqual(stats["live_keys"], 1)
+        # 19 of the 20 writes are now dead weight in the log.
+        self.assertGreater(stats["dead_bytes"], 0)
+        self.assertLess(stats["live_bytes"], stats["log_size_bytes"])
+        self.assertGreater(stats["dead_ratio"], 0.5)
+        store.close()
+
+    def test_stats_detects_dead_bytes_from_deletes(self):
+        store = KVStore(self.make_path())
+        store.set("keep", "1")
+        store.set("drop", "2")
+        store.delete("drop")
+        stats = store.stats()
+        self.assertEqual(stats["live_keys"], 1)
+        self.assertGreater(stats["dead_bytes"], 0)  # the "drop" set + its tombstone
+        store.close()
+
+    def test_stats_ratio_drops_to_zero_after_compaction(self):
+        store = KVStore(self.make_path())
+        for i in range(20):
+            store.set("hot_key", f"value_{i}")
+        self.assertGreater(store.stats()["dead_ratio"], 0)
+        store.compact()
+        stats_after = store.stats()
+        self.assertEqual(stats_after["dead_bytes"], 0)
+        self.assertEqual(stats_after["dead_ratio"], 0.0)
+        self.assertEqual(stats_after["live_bytes"], stats_after["log_size_bytes"])
+        store.close()
+
+    def test_stats_reflects_current_index_not_stale_after_reopen(self):
+        path = self.make_path()
+        store = KVStore(path)
+        store.set("a", "1")
+        store.set("a", "2")
+        store.close()
+
+        store2 = KVStore(path)  # replay rebuilds the index from the log
+        stats = store2.stats()
+        self.assertEqual(stats["live_keys"], 1)
+        self.assertGreater(stats["dead_bytes"], 0)  # the superseded "1" write
+        store2.close()
+
+
 class TestCorruptRecord(TempDBMixin, unittest.TestCase):
     def test_unknown_flag_raises(self):
         path = self.make_path()

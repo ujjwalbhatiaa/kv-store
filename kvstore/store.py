@@ -219,6 +219,53 @@ class KVStore:
             new_size = os.path.getsize(self.path)
             return old_size, new_size
 
+    # ------------------------------------------------------------------ #
+    # observability
+    # ------------------------------------------------------------------ #
+    def stats(self):
+        """Return a dict describing the current health of the log, to help
+        decide whether `compact()` is worth running right now.
+
+        Keys
+        ----
+        live_keys : int
+            Number of keys currently live in the index.
+        log_size_bytes : int
+            Current size of the on-disk log file.
+        live_bytes : int
+            Bytes the log would occupy if compacted right now (header +
+            key + value for each live entry, using the current on-disk
+            record layout).
+        dead_bytes : int
+            log_size_bytes - live_bytes -- space reclaimable by
+            compaction: old/superseded values, delete tombstones, and
+            their headers/keys.
+        dead_ratio : float
+            dead_bytes / log_size_bytes, in [0.0, 1.0]. 0.0 on an empty
+            log. A high ratio (e.g. > 0.5) means most of the file on
+            disk is dead weight and compact() would shrink it a lot;
+            a ratio near 0 means compaction would reclaim little and
+            isn't worth the rewrite cost yet.
+        """
+        with self._lock:
+            log_size_bytes = os.path.getsize(self.path)
+            live_bytes = sum(
+                _HEADER.size + len(key_b) + vlen
+                for key_b, (_, vlen) in self._index.items()
+            )
+            # live_bytes is derived from the in-memory index and can't
+            # exceed the file it was built from, but guard against a
+            # negative dead_bytes from any future accounting drift.
+            dead_bytes = max(0, log_size_bytes - live_bytes)
+            dead_ratio = (dead_bytes / log_size_bytes) if log_size_bytes else 0.0
+            return {
+                "live_keys": len(self._index),
+                "log_size_bytes": log_size_bytes,
+                "live_bytes": live_bytes,
+                "dead_bytes": dead_bytes,
+                "dead_ratio": dead_ratio,
+            }
+
 
 def _to_bytes(value, label):
     if isinstance(value, bytes):
